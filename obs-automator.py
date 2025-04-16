@@ -1,129 +1,112 @@
 #!/usr/bin/env python3
 
-import requests
-from shutil import copyfile
-import os
+# note the absolute home directory paths below /home/pi and update them before using!
 
-# customize your file paths here for your user account
-streamURLfilePath = '/home/pi/stream.url'
-basicIniTemplateFile = '/home/pi/basic.ini.template'
-serviceJsonTemplateFile = '/home/pi/service.json.template'
-basicIniFile = '/home/pi/basic.ini'
-serviceJsonFile = '/home/pi/service.json'
-streamURLfile = '/home/pi/stream.url'
-liveServiceJsonFile = '/home/pi/.config/obs-studio/basic/profiles/default/service.json'
-liveBasicIniFile = '/home/pi/.config/obs-studio/basic/profiles/default/basic.ini'
-obsLogFile = '/home/pi/obs-logfile.txt'
+from datetime import datetime, date, timedelta
+import os, re, psutil, caldav
 
-# Replace the following with the Webcast URL for your Teradek-compatible XML configuration file
-x = requests.get('https://webcast.example.com/2368').text
-# The example files below are templates, though the test-off file should work as-is
-#x = requests.get('https://raw.githubusercontent.com/jeremywillden/obs-automator/main/test-on.xml').text
-#x = requests.get('https://raw.githubusercontent.com/jeremywillden/obs-automator/main/test-off.xml').text
+calendarurl="/caldav.php/username/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX/"
+caldav_url = 'https://calendar.server.url.com/'
+username = 'obsstudio'
+password = 'USE_SECURE_PASSWORD_HERE'
 
-streamstarting = False
-streamending = False
+prestreamtime = timedelta(minutes=30)
+poststreamtime = timedelta(minutes=15)
+rightnow = datetime.now()
+later = rightnow + prestreamtime
+earlier = rightnow - poststreamtime
 
-# There's certainly a better way to extract these values, using standard XML libraries is risky,
-# as many of them do not check for intentional attack data structures
-# (they can eat Gigs of RAM with a few lines of code) - this method is robust enough for this application
-_,videobitrate = x.split("<video>")
-videobitrate,_ = videobitrate.split("</video>")
-_,videobitrate = videobitrate.split("<custom_bitrate>")
-videobitrate,_ = videobitrate.split("</custom_bitrate>")
-_,audiobitrate = x.split("<audio>")
-audiobitrate,_ = audiobitrate.split("</audio>")
-_,audiobitrate = audiobitrate.split("<custom_bitrate>")
-audiobitrate,_ = audiobitrate.split("</custom_bitrate>")
-_,url = x.split("<url>")
-url,_ = url.split("</url>")
-_,streamkey = x.split("<stream>")
-streamkey,_ = streamkey.split("</stream>")
+def checkprocessrunning(procname):
+	isprocessrunning = False
+	for proc in psutil.process_iter(['name']):
+		# print(proc.info['name'])
+		if procname == proc.info['name']:
+			isprocessrunning = True
+	return isprocessrunning
 
-try:
-	with open(streamURLfilePath, 'r') as streamurlfilereader:
-		currentstreamurl = streamurlfilereader.read()
-except:
-	currentstreamurl = "RTMPURL"
-	pass
-if("RTMPURL" == url):
-	url = ""
-if("RTMPURL" == currentstreamurl):
-	currentstreamurl = ""
-print("currentstreamurl is " + currentstreamurl)
-if(url.startswith("rtmp:")):
-	serveractive = True
-	print("serveractive is True")
-else:
-	serveractive = False
-	print("serveractive is False")
-	url = "" # this is the value when no stream is active
-if(currentstreamurl.startswith("rtmp:")):
-	streamactive = True
-	print("streamactive is True")
-else:
-	streamactive = False
-	print("streamactive is False")
-	currentstreamurl = "" # this is the value when no stream is active
+def checkprocessrunningwithopt(procname, optstr):
+	isprocessrunning = False
+	for proc in psutil.process_iter(['name']):
+		# print(proc.info['name'])
+		if procname == proc.info['name']:
+			if optstr in proc.cmdline():
+				isprocessrunning = True
+	return isprocessrunning
 
-if("" == url):
-	if(streamactive):
-		print("stopping stream and exiting")
-		streamending = True
+def checkcmdrunning(procname):
+	isprocessrunning = False
+	for proc in psutil.process_iter(['name']):
+		for item in proc.cmdline():
+			# print(item)
+			if procname == item:
+				isprocessrunning = True
+	return isprocessrunning
+
+def checkcmdrunningwithopt(procname, optstr):
+     isprocessrunning = False
+     for proc in psutil.process_iter(['name']):
+             for item in proc.cmdline():
+                     if procname == item:
+#                             print(proc.cmdline())
+                             if optstr in proc.cmdline():
+                                     isprocessrunning = True
+     return isprocessrunning
+
+print("Right Now: ", rightnow)
+#print("Later (prestreamtime): " , later)
+#print("Earlier (poststreamtime): ", earlier)
+
+client = caldav.DAVClient(url=caldav_url, username=username, password=password)
+my_principal = client.principal()
+# calendars = my_principal.calendars()
+# print(calendars)
+
+mycalendar = caldav.Calendar(client=client, url=calendarurl)
+#print(mycalendar)
+events_fetched = mycalendar.date_search(start=earlier, end=later, expand=True)
+
+#print(events_fetched)
+#print(len(events_fetched))
+if 0 == len(events_fetched):
+	print("no streams currently scheduled")
+	if checkprocessrunningwithopt('obs', '--startstreaming'): #checkprocessrunning('obs'):
+		print("OBS is running and streaming but no event is scheduled, stopping the stream")
+		os.system("sudo /usr/bin/pkill --signal SIGTERM obs")
 	else:
-		print("no stream scheduled, no stream running, exiting")
+		print("OBS is not running, so not doing anything")
 else:
-	if(streamactive):
-		print("stream URL has not changed, not taking any action")
-	else:
-		streamstarting = True
-		print("stream URL has just changed for a new event, creating files and starting stream")
-		currentstreamurl = url
-		print("stream url: " + url)
-		print("stream key: " + streamkey)
-		print("video bitrate: " + videobitrate)
-		videokbitrate = str(int(int(videobitrate) / 1000))
-		print("video kbitrate: " + videokbitrate)
-		print("audio bitrate: " + audiobitrate)
-		audiokbitrate = str(int(int(audiobitrate) / 1000))
-		print("audio kbitrate: " + audiokbitrate)
-		#print(b)
-
-		with open(basicIniTemplateFile, 'r') as basicfilereader:
-			basicfiledata = basicfilereader.read()
-		with open(serviceJsonTemplateFile, 'r') as servicefilereader:
-			servicefiledata = servicefilereader.read()
-
-		#print("BASIC FILE:")
-		#print(basicfiledata)
-		#print("SERVICE FILE:")
-		#print(servicefiledata)
-
-		basicfiledata = basicfiledata.replace("VBITRATE", videokbitrate)
-		basicfiledata = basicfiledata.replace("ABITRATE", audiokbitrate)
-		with open(basicIniFile, 'w+') as writer:
-			writer.seek(0)
-			writer.writelines(basicfiledata)
-			writer.truncate()
-
-		servicefiledata = servicefiledata.replace("RTMPURL", currentstreamurl)
-		servicefiledata = servicefiledata.replace("RTMPSTREAM", streamkey)
-		with open(serviceJsonFile, 'w+') as writer:
-			writer.seek(0)
-			writer.writelines(servicefiledata)
-			writer.truncate()
-
-if(streamstarting or streamending):
-	print("writing to stream.url file the value: " + url)
-	with open(streamURLfile, 'w+') as streamurlfilewriter:
-		streamurlfilewriter.seek(0)
-		streamurlfilewriter.write(url)
-
-	copyfile(serviceJsonFile, liveServiceJsonFile)
-	copyfile(basicIniFile, liveBasicIniFile)
-
-if(streamstarting):
-	os.system("export DISPLAY=:0; /usr/bin/obs --startstreaming --profile 'default' &> " + obsLogFile + " &")
-if(streamending):
-	os.system("pkill obs")
-
+	try:
+	#	print(events_fetched[0].data)
+		firstEventData = events_fetched[0].data
+	#	print('firstEventData is: ', firstEventData)
+		f = re.compile(r"SUMMARY:")
+		#print(f.match('SUMMARY: hey there').string[8:])
+		eventname = re.search('^SUMMARY.*', firstEventData, re.MULTILINE).group(0)[8:]
+		re.search('^SUMMARY.*', firstEventData, re.MULTILINE).group(0)[8:]
+		prestream = mycalendar.date_search(start=rightnow, end=later, expand=True)
+		poststream = mycalendar.date_search(start=earlier, end=rightnow, expand=True)
+		if ( (len(prestream) > 0) and (0 == len(poststream)) ):
+			print("currently pre-streaming event: ", eventname)
+			if checkprocessrunning('obs'):
+				print("OBS is running during pre-stream, not doing anything")
+			else:
+				print("OBS is not running during pre-stream, starting it")
+				os.system("export DISPLAY=:0; export LIBVA_DRIVER_NAME=i965; /usr/bin/obs --startstreaming --disable-shutdown-check --profile 'default' &> /home/pi/obs-logfile.txt &")
+		elif ( (len(poststream) > 0) and (0 == len(prestream)) ):
+			print("currently post-streaming event: ", eventname)
+			if checkprocessrunning('obs'):
+				print("OBS is running during post-stream, not doing anything")
+			else:
+				print("OBS is not running during post-stream, starting it")
+				os.system("export DISPLAY=:0; export LIBVA_DRIVER_NAME=i965; /usr/bin/obs --startstreaming --disable-shutdown-check --profile 'default' &> /home/pi/obs-logfile.txt &")
+		else: # ( (len(poststream) > 0) and (len(prestream) > 0) ):
+			print("currently streaming event: ", eventname)
+			if checkprocessrunning('obs'):
+				print("OBS is running, not doing anything")
+			else:
+				print("OBS is not running, starting it")
+				os.system("export DISPLAY=:0; export LIBVA_DRIVER_NAME=i965; /usr/bin/obs --startstreaming --disable-shutdown-check --profile 'default' &> /home/pi/obs-logfile.txt &")
+	except Exception as e:
+		print("exception when accessing calendar, taking no action")
+		print(str(e))
+		pass
